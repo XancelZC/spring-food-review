@@ -2,6 +2,7 @@ package com.hmdp.service.impl;
 
 import cn.hutool.core.util.BooleanUtil;
 import cn.hutool.core.util.StrUtil;
+import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
 import com.hmdp.dto.Result;
 import com.hmdp.entity.Shop;
@@ -9,11 +10,15 @@ import com.hmdp.mapper.ShopMapper;
 import com.hmdp.service.IShopService;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.hmdp.utils.RedisConstants;
+import com.hmdp.utils.RedisData;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
 import javax.annotation.Resource;
 
+import java.time.LocalDateTime;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 import static com.hmdp.utils.RedisConstants.*;
@@ -34,12 +39,58 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
 
     @Override
     public Result queryById(Long id) {
-//        Shop shop = queryWithPassThrough(id);
+        //解决缓存穿透
+//      Shop shop = queryWithPassThrough(id);
+        //互斥锁解决缓存击穿
+//      Shop shop = queryWithMutex(id);
+        //逻辑过期解决缓存击穿
+        Shop shop = queryWithLogicalExpire(id);
 
-        Shop shop = queryWithMutex(id);
         return Result.ok(shop);
     }
 
+    //线程池
+    private static final ExecutorService CACHE_REBUILD_EXECUTOR = Executors.newFixedThreadPool(10);
+    //逻辑过期
+    public Shop queryWithLogicalExpire(Long id) {
+        //1 根据id查询Redis是否有缓存
+        String key = CACHE_SHOP_KEY + id;
+        String json = stringRedisTemplate.opsForValue().get(key);
+
+        //2 如果不存在，直接返回
+        if (StrUtil.isBlank(json)){
+            return null;
+        }
+        // 3 如果命中 需要先将json反序列化成对象
+        RedisData redisData = JSONUtil.toBean(json, RedisData.class);
+        Shop shop = JSONUtil.toBean((JSONObject) redisData.getData(), Shop.class);
+        LocalDateTime expireTime = redisData.getExpireTime();
+        //4 判断是否过期
+        if (expireTime.isAfter(LocalDateTime.now())){
+            //4.1 没有过期 直接返回
+            return shop;
+        }
+        // 4.2 已经过期了 需要缓存重建
+        // 5 实现缓存重建
+        // 5.1.获取互斥锁
+        String lockKey = LOCK_SHOP_KEY + id;
+        boolean isLock = tryLock(lockKey);
+        // 5.2 判断是否获取锁成功
+        if (isLock){
+            CACHE_REBUILD_EXECUTOR.submit( ()->{
+                try {
+                    //重建缓存
+                    this.saveShop2Redis(id,20L);
+                } catch (Exception e) {
+                    throw new RuntimeException(e);
+                } finally {
+                    unlock(lockKey);
+                }
+            });
+        }
+        //返回过期的店铺消息
+        return shop;
+    }
 
     //缓存击穿
     public Shop queryWithMutex(Long id){
@@ -58,7 +109,7 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
 
         // 4 实现缓存重建
         // 4.1.获取互斥锁
-        String lockKey = "lock:shop:" + id;
+        String lockKey = LOCK_SHOP_KEY + id;
         Shop shop = null;
         try {
             boolean isLock = tryLock(lockKey);
@@ -132,7 +183,6 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
         return Result.ok();
     }
 
-
     private boolean tryLock(String key){
         Boolean flag = stringRedisTemplate.opsForValue().setIfAbsent(key, "1", 10, TimeUnit.SECONDS);
         return BooleanUtil.isTrue(flag);
@@ -140,5 +190,17 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
 
     private void unlock(String key){
         stringRedisTemplate.delete(key);
+    }
+
+    //缓存写入
+    public void saveShop2Redis(Long id, Long expireSeconds){
+        // 1 查询店铺数据
+        Shop shop = getById(id);
+        // 2 封装逻辑过期时间
+        RedisData redisData = new RedisData();
+        redisData.setData(shop);
+        redisData.setExpireTime(LocalDateTime.now().plusSeconds(expireSeconds));
+        // 3 写入Redis
+        stringRedisTemplate.opsForValue().set(CACHE_SHOP_KEY+id,JSONUtil.toJsonStr(redisData));
     }
 }
