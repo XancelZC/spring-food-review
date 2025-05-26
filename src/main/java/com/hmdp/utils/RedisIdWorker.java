@@ -1,7 +1,6 @@
 package com.hmdp.utils;
 
 import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.stereotype.Component;
 
 import javax.annotation.Resource;
