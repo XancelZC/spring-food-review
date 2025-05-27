@@ -9,6 +9,7 @@ import com.hmdp.service.IVoucherOrderService;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.hmdp.utils.RedisIdWorker;
 import com.hmdp.utils.UserHolder;
+import org.springframework.aop.framework.AopContext;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -32,7 +33,6 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
     private RedisIdWorker redisIdWorker;
 
     @Override
-    @Transactional
     public Result seckillVoucher(Long voucherId) {
         // 1 查询优惠券
         SeckillVoucher voucher = seckillVoucherService.getById(voucherId);
@@ -51,11 +51,32 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         if (stock < 1){
             return Result.fail("库存不足");
         }
+
+        Long userId = UserHolder.getUser().getId();
+        synchronized (userId.toString().intern()) {
+            //获取代理对象（事务）
+            IVoucherOrderService proxy = (IVoucherOrderService) AopContext.currentProxy();
+            return proxy.createVoucherOrder(voucherId);
+        }
+    }
+
+    @Transactional
+    public Result createVoucherOrder(Long voucherId) {
+        // add 增加一人一单逻辑
+        // a.1获取用户id
+        Long userId = UserHolder.getUser().getId();
+        synchronized (userId.toString().intern()){
+        int count = query().eq("user_id", userId).eq("voucher_id", voucherId).count();
+        // a.2判断是否存在
+        if (count > 0){
+            return Result.fail("用户已经购买过了");
+        }
+
         // 5 扣减库存
         boolean success = seckillVoucherService
                 .update()
                 .setSql("stock = stock-1")
-                .eq("voucher_id", voucherId).gt("stock",0)  //乐观锁解决超卖问题
+                .eq("voucher_id", voucherId).gt("stock",0)  //乐观锁解决超卖问题 用于更新业务（此处为扣减库存）
                 .update();
         if (!success){
             return Result.fail("库存不足");
