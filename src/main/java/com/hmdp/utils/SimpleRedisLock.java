@@ -1,8 +1,8 @@
 package com.hmdp.utils;
 
-import cn.hutool.core.io.resource.ClassPathResource;
 import cn.hutool.core.lang.UUID;
 import org.apache.ibatis.javassist.ClassPath;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
 
@@ -23,11 +23,11 @@ public class SimpleRedisLock implements ILock{
     private static final String KEY_PREFIX = "lock:";
     private static final String ID_PREFIX = UUID.randomUUID().toString(true) + "-";
     private static final DefaultRedisScript<Long> UNLOCK_SCRIPT;
-        static {
-            UNLOCK_SCRIPT = new DefaultRedisScript<>();
-            UNLOCK_SCRIPT.setLocation(new ClassPathResource("unlock.lua"));
-            UNLOCK_SCRIPT.setResultType(Long.class);
-        }
+    static {
+        UNLOCK_SCRIPT = new DefaultRedisScript<>();
+        UNLOCK_SCRIPT.setLocation(new ClassPathResource("unlock.lua"));
+        UNLOCK_SCRIPT.setResultType(Long.class);
+    }
 
 
     /**
